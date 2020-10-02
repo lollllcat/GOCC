@@ -5,7 +5,7 @@
   It will generate a patch for the given source code with HTM replacement after static analysis on the call graph.
 
 ## How to get it
-`go get -u github.com/uber-research/GOCC/...`
+`go get -u github.com/lollllcat/GOCC/...`
 
 ## How to run
 `cd $GOPATH/GOCC/tools/gocc`.
