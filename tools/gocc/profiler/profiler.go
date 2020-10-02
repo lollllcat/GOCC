@@ -17,8 +17,8 @@ import (
 	"os"
 	"strings"
 
-	graph "github.com/uber-research/GOCC/tools/gocc/internal/graph"
 	"github.com/google/pprof/profile"
+	graph "github.com/lollllcat/GOCC/tools/gocc/internal/graph"
 )
 
 func buildCallGraphFromProfile(profileFile string, opts *graph.Options) (*graph.Graph, error) {
