@@ -574,6 +574,21 @@ func pathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 	return false
 }
 
+func reversePathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
+	for _, path := range replacePath {
+		for i := len(path) - 1; i >= 0; i-- {
+			switch n := path[i].(type) {
+			case *ast.BlockStmt:
+				if n.Pos() == curPos {
+					return true
+				}
+			}
+
+		}
+	}
+	return false
+}
+
 func singlePathContains(singlePath []ast.Node, curPos token.Pos) bool {
 	for _, node := range singlePath {
 		if node.Pos() == curPos {
@@ -961,7 +976,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 						Path: &ast.BasicLit{
 							ValuePos: n.Path.ValuePos,
 							Kind:     n.Path.Kind,
-							Value:    strconv.Quote("github.com/uber-research/GOCC/tools/gocc/rtmlib"),
+							Value:    strconv.Quote("github.com/lollllcat/GOCC/tools/gocc/rtmlib"),
 						},
 						Comment: n.Comment,
 						EndPos:  n.EndPos,
@@ -976,7 +991,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 				// not added before
 				if _, ok := blkmap[blkStmt]; !ok {
 					if fd, ok := c.Parent().(*ast.FuncDecl); ok && c.Name() == "Body" {
-						containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
+						containLocks := reversePathContains(*replacePathMutex, n.Pos()) || reversePathContains(*replacePathRWMutex, n.Pos()) || reversePathContains(*insertPathRWMutex, n.Pos()) || reversePathContains(*insertPathMutex, n.Pos())
 						if containLocks {
 							addContextInitStmt(&(fd.Body.List), fd.Name.NamePos)
 							blkmap[blkStmt] = true
@@ -1179,7 +1194,7 @@ func main() {
 	prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.NaiveForm|ssa.GlobalDebug)
 	// prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.GlobalDebug)
 	libbuilder.BuildPackages(prog, ssapkgs, true, true)
-	mCallGraph := libcg.BuildRtaCG(prog, false)
+	mCallGraph := libcg.BuildRtaCG(prog, true)
 
 	// TODO: first pass on optimized form and second pass on naive form to check if it is a value or object
 
