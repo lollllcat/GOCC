@@ -1137,6 +1137,8 @@ func main() {
 
 	syntheticPtr := flag.Bool("synthetic", false, "set true if the synthetic main from transformer is used")
 
+	rewriteTestFile := flag.Bool("rewriteTest", false, "set true if you want to change testing file")
+
 	flag.Parse()
 
 	if inputFile == "" {
@@ -1275,6 +1277,16 @@ func main() {
 		usesMap = pkg.TypesInfo.Uses
 		typesMap = pkg.TypesInfo.Types
 		for _, file := range pkg.Syntax {
+
+			// don't rewrite testing file by default
+			if *rewriteTestFile == false {
+				fName := pkg.Fset.Position(file.Pos()).Filename
+				if strings.HasSuffix(fName, "_test.go") {
+					fmt.Printf("%v is skipped since it is a testing file\n", fName)
+					continue
+				}
+			}
+
 			// replacePath means the lock is a pointer so we can replace it directly
 			// insertPath indicates the lock is a value and we need to take the address of it.
 			replacePathRWMutex := make([][]ast.Node, 0)
