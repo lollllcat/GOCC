@@ -642,6 +642,7 @@ func addContextInitStmt(stmtsList *[]ast.Stmt, sigPos token.Pos) {
 func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPathRWMutex, replacePathMutex, insertPathMutex *[][]ast.Node) ast.Node {
 	fmt.Println("  Rewriting field accesses in the file...")
 	blkmap := make(map[*ast.BlockStmt]bool)
+	addImport := false
 	postFunc := func(c *astutil.Cursor) bool {
 		node := c.Node()
 		switch n := node.(type) {
@@ -985,7 +986,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 			}
 		case *ast.ImportSpec:
 			{
-				if n.Path.Value == "\"sync\"" {
+				if addImport == false {
 					newImport := &ast.ImportSpec{
 						Doc:  n.Doc,
 						Name: ast.NewIdent("rtm"),
@@ -998,6 +999,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 						EndPos:  n.EndPos,
 					}
 					c.InsertAfter(newImport)
+					addImport = true
 				}
 			}
 		case *ast.BlockStmt:
