@@ -110,6 +110,22 @@ func isLockPointer(rcv ssa.Value) bool {
 		} else {
 			// Pointer type
 		}
+	case *ssa.Global:
+		allcTmp := rcv.(*ssa.Global)
+		if isMutexValue(allcTmp.Type().String()) {
+			// is a value
+			isValue = true
+		} else {
+			// is a pointer
+		}
+	case *ssa.FreeVar:
+		allcTmp := rcv.(*ssa.FreeVar)
+		if isMutexValue(allcTmp.Type().String()) {
+			// is a value
+			isValue = true
+		} else {
+			// is a pointer
+		}
 	default:
 		// Pointer type
 	}
@@ -639,7 +655,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 							if se.Sel.Name == "Lock" || se.Sel.Name == "Unlock" {
 								lockType := typesMap[se.X].Type.String()
 								// branch 1: receiver is lock pointer
-								if lockType == "*sync.Mutex" {
+								if strings.Contains(lockType, "*sync.Mutex") {
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
 											Name:    majicLockName,
