@@ -22,7 +22,7 @@ var hasRTM bool = false
 
 // auxilary data structure for lock spinning
 var dummySpinLoad [64]int32
-var spinLimit int = 10000
+var spinLimit int = 100
 
 var weightLowerBound int32 = -16
 var weightUpperBound int32 = 15
@@ -207,12 +207,8 @@ func (ml *OptiLock) Lock(lock *sync.Mutex) {
 		// Transaction failed for some reason.
 		// Lets investigate.
 		// abort because lock and unlock do not pair
-		//fmt.Println("Error code " + strconv.Itoa(int(status)))
 		if isUnpairedUnlock(status) || entry.remainingTrial == 0 {
 			ml.rtmFails = true
-			if entry.remainingTrial == 0 {
-				//fmt.Println("Used up all trial number")
-			}
 			goto _SLOWPATH
 		}
 		if entry.remainingTrial > 0 {
@@ -220,14 +216,6 @@ func (ml *OptiLock) Lock(lock *sync.Mutex) {
 		}
 		// Decrement number of trials
 		if (status & (TxAbortRetry | TxAbortConflict | TxAbortExplicit)) != 0 {
-
-			if (status & TxAbortRetry) != 0 {
-				//fmt.Println("HTM abort from TxAbortRetry")
-			} else if (status & TxAbortConflict) != 0 {
-				//fmt.Println("HTM abort from TxAbortConflict")
-			} else if (status & TxAbortExplicit) != 0 {
-				//fmt.Println("HTM abort from TxAbortExplicit")
-			}
 			// Spin a bit and then retry
 			loopCnt := int(entry.duration)
 			for i := 0; i < loopCnt; i++ {
@@ -279,7 +267,6 @@ func (ml *OptiLock) Unlock(lock *sync.Mutex) {
 
 		// we enter here since we used up all the trials
 		if ml.rtmFails == true {
-			//fmt.Println("HTM fails")
 			entry.weightIP = bounded(entry.weightIP, -1)
 			entry.weightLock = bounded(entry.weightLock, -1)
 			if entry.trial > 0 {
@@ -291,7 +278,6 @@ func (ml *OptiLock) Unlock(lock *sync.Mutex) {
 				}
 			}
 		} else {
-			//fmt.Println("HTM is not used")
 		}
 
 	} else {
@@ -299,8 +285,6 @@ func (ml *OptiLock) Unlock(lock *sync.Mutex) {
 		TxEnd()
 
 		timeElapse := rdtsc.Counter() - ml.tsc
-
-		//fmt.Println("HTM works in " + strconv.Itoa(int(entry.trial-entry.remainingTrial+1)) + " trials")
 
 		// HTM works, update the weight
 		entry.weightIP = bounded(entry.weightIP, int8(entry.trial))
@@ -365,26 +349,14 @@ func (ml *OptiLock) RLock(lock *sync.RWMutex) {
 		// Transaction failed for some reason.
 		// Lets investigate.
 		// abort because lock and unlock do not pair
-		//fmt.Println("Error code " + strconv.Itoa(int(status)))
 		if isUnpairedUnlock(status) || entry.remainingTrial == 0 {
 			ml.rtmFails = true
-			if entry.remainingTrial == 0 {
-				//fmt.Println("Used up all trial number")
-			}
 			goto _SLOWPATH
 		}
 		if entry.remainingTrial > 0 {
 			entry.remainingTrial--
 		}
 		if (status & (TxAbortRetry | TxAbortConflict | TxAbortExplicit)) != 0 {
-
-			if (status & TxAbortRetry) != 0 {
-				//fmt.Println("HTM abort from TxAbortRetry")
-			} else if (status & TxAbortConflict) != 0 {
-				//fmt.Println("HTM abort from TxAbortConflict")
-			} else if (status & TxAbortExplicit) != 0 {
-				//fmt.Println("HTM abort from TxAbortExplicit")
-			}
 			// We'll retry
 			// try a little bit more if confidence score is high
 			// Spin a bit and then retry
@@ -432,7 +404,6 @@ func (ml *OptiLock) RUnlock(lock *sync.RWMutex) {
 		timeElapse := rdtsc.Counter() - ml.tsc
 
 		if ml.rtmFails == true {
-			//fmt.Println("HTM fails")
 			// update the weight since they are not working
 			entry.weightIP = bounded(entry.weightIP, -1)
 			entry.weightLock = bounded(entry.weightLock, -1)
@@ -444,16 +415,12 @@ func (ml *OptiLock) RUnlock(lock *sync.RWMutex) {
 					entry.trial--
 				}
 			}
-		} else {
-			//fmt.Println("HTM is not used")
 		}
 	} else {
 		// it is a rtm
 		TxEnd()
 
 		timeElapse := rdtsc.Counter() - ml.tsc
-
-		//fmt.Println("HTM works in " + strconv.Itoa(int(entry.trial-entry.remainingTrial+1)) + " trials")
 
 		// HTM works, update the weight
 		entry.weightIP = bounded(entry.weightIP, int8(entry.trial))
@@ -520,11 +487,7 @@ func (ml *OptiLock) WLock(lock *sync.RWMutex) {
 		// Transaction failed for some reason.
 		// Lets investigate.
 		// abort because lock and unlock do not pair
-		//fmt.Println("Error code " + strconv.Itoa(int(status)))
 		if isUnpairedUnlock(status) || entry.remainingTrial == 0 {
-			if entry.remainingTrial == 0 {
-				//fmt.Println("Used up all trial number")
-			}
 			ml.rtmFails = true
 			goto _SLOWPATH
 		}
@@ -532,14 +495,6 @@ func (ml *OptiLock) WLock(lock *sync.RWMutex) {
 			entry.remainingTrial--
 		}
 		if (status & (TxAbortRetry | TxAbortConflict | TxAbortExplicit)) != 0 {
-
-			if (status & TxAbortRetry) != 0 {
-				//fmt.Println("HTM abort from TxAbortRetry")
-			} else if (status & TxAbortConflict) != 0 {
-				//fmt.Println("HTM abort from TxAbortConflict")
-			} else if (status & TxAbortExplicit) != 0 {
-				//fmt.Println("HTM abort from TxAbortExplicit")
-			}
 			// Spin a bit and then retry
 			loopCnt := int(entry.duration)
 			for i := 0; i < loopCnt; i++ {
@@ -587,7 +542,6 @@ func (ml *OptiLock) WUnlock(lock *sync.RWMutex) {
 
 		// we enter here since we used up all the trials
 		if ml.rtmFails == true {
-			//fmt.Println("HTM fails")
 			entry.weightIP = bounded(entry.weightIP, -1)
 			entry.weightLock = bounded(entry.weightLock, -1)
 			entry.failure++
@@ -599,8 +553,6 @@ func (ml *OptiLock) WUnlock(lock *sync.RWMutex) {
 					entry.trial--
 				}
 			}
-		} else {
-			//fmt.Println("HTM is not used")
 		}
 	} else {
 		// it is a rtm
@@ -609,8 +561,6 @@ func (ml *OptiLock) WUnlock(lock *sync.RWMutex) {
 		// HTM works, update the weight
 
 		timeElapse := rdtsc.Counter() - ml.tsc
-
-		//fmt.Println("HTM works in " + strconv.Itoa(int(entry.trial-entry.remainingTrial+1)) + " trials")
 
 		entry.weightIP = bounded(entry.weightIP, int8(entry.trial))
 		entry.weightLock = bounded(entry.weightLock, int8(entry.trial))
