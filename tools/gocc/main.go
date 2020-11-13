@@ -458,6 +458,9 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 		for ul := range setUnlock {
 			// ulRcv := ul.Args[0].String()
 			for l := range setLock {
+				if setLockIndex[l] > setUnlockIndex[ul] {
+					continue
+				}
 				lRcv := l.Args[0].String()
 				if isSameLock(l.Args[0], ul.Args[0]) && mapLockToBB[l] == mapUnlockToBB[ul] {
 					// check critical section
