@@ -599,14 +599,16 @@ func pathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 
 func reversePathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 	for _, path := range replacePath {
-		for i := len(path) - 1; i >= 0; i-- {
+	_PATHLOOP:
+		for i := 0; i < len(path); i++ {
 			switch n := path[i].(type) {
 			case *ast.BlockStmt:
 				if n.Pos() == curPos {
 					return true
+				} else {
+					break _PATHLOOP
 				}
 			}
-
 		}
 	}
 	return false
@@ -1015,10 +1017,11 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 				blkStmt := c.Node().(*ast.BlockStmt)
 				// not added before
 				if _, ok := blkmap[blkStmt]; !ok {
-					if fd, ok := c.Parent().(*ast.FuncDecl); ok && c.Name() == "Body" {
+					// if fd, ok := c.Parent().(*ast.FuncDecl); ok && c.Name() == "Body" {
+					if c.Name() == "Body" {
 						containLocks := reversePathContains(*replacePathMutex, n.Pos()) || reversePathContains(*replacePathRWMutex, n.Pos()) || reversePathContains(*insertPathRWMutex, n.Pos()) || reversePathContains(*insertPathMutex, n.Pos())
 						if containLocks {
-							addContextInitStmt(&(fd.Body.List), fd.Name.NamePos)
+							addContextInitStmt(&blkStmt.List, c.Node().Pos())
 							blkmap[blkStmt] = true
 						}
 					}
