@@ -229,6 +229,10 @@ func localCheck(blks []*ssa.BasicBlock) bool {
 
 // check if single insturction is violating HTM or not
 func checkInst(ins ssa.Instruction) bool {
+	// no go func() in the critical section
+	if _, ok := ins.(*ssa.Go); ok {
+		return false
+	}
 	if call, ok := ins.(*ssa.Call); ok {
 		callRcv := call.Call.Value
 		if checkBlockList(&callRcv) {
