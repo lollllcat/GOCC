@@ -52,6 +52,9 @@ var hotFuncMap map[string]bool
 // since it will have different namescope
 var lockInLambdaFunc map[token.Pos]bool
 
+// this map will keep the all blkstmt position whose parent is funclit
+var blkstmtMap map[token.Pos]bool
+
 // for any lock, lockInfo stores the positions where it locks and (defer) unlocks
 // isValue indicates whether this lock is lock object or pointer in source code
 type lockInfo struct {
@@ -609,7 +612,7 @@ func reversePathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 			case *ast.BlockStmt:
 				if n.Pos() == curPos {
 					return true
-				} else {
+				} else if _, ok := blkstmtMap[n.Pos()]; ok {
 					break _PATHLOOP
 				}
 			}
@@ -638,6 +641,22 @@ func addContextInitStmt(stmtsList *[]ast.Stmt, sigPos token.Pos) {
 	newStmtsList = append(newStmtsList, &newStmt)
 	newStmtsList = append(newStmtsList, (*stmtsList)...)
 	*stmtsList = newStmtsList
+}
+
+func collectBlkstmt(f ast.Node, pkg *packages.Package) {
+	postFunc := func(c *astutil.Cursor) bool {
+		node := c.Node()
+		switch node.(type) {
+		case *ast.BlockStmt:
+			{
+				if _, ok := c.Parent().(*ast.FuncLit); ok && c.Name() == "Body" {
+					blkstmtMap[c.Node().Pos()] = true
+				}
+			}
+		}
+		return true
+	}
+	astutil.Apply(f, nil, postFunc)
 }
 
 // given the function f from the pkg, replace all the valid lock/unlock with htm library
@@ -1030,9 +1049,10 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 						}
 					} else if fl, ok := c.Parent().(*ast.FuncLit); ok && c.Name() == "Body" {
 						// containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
-						containLocks := pathContains(*lambdaPath, n.Pos())
+						containLocks := reversePathContains(*lambdaPath, c.Node().Pos())
 						if containLocks {
-							addContextInitStmt(&(fl.Body.List), fl.Pos())
+							fmt.Println("haha")
+							addContextInitStmt(&(fl.Body.List), fl.Body.Lbrace)
 							blkmap[blkStmt] = true
 						}
 					}
@@ -1157,6 +1177,7 @@ func main() {
 	hotFuncMap = make(map[string]bool)
 
 	lockInLambdaFunc = make(map[token.Pos]bool)
+	blkstmtMap = make(map[token.Pos]bool)
 
 	mPkg = make(map[string]int)
 
@@ -1413,6 +1434,7 @@ func main() {
 			}
 			if numberOfLocksToChange > 0 && writeOutput {
 				fmt.Printf("Number of locks to rewrite %v\n", numberOfLocksToChange)
+				collectBlkstmt(file, pkg)
 				ast := rewriteAST(file, pkg, &replacePathRWMutex, &insertPathRWMutex, &replacePathMutex, &insertPathMutex, &lambdaPath, &normalPath)
 				filename := prog.Fset.Position(ast.Pos()).Filename
 				writeAST(ast, inputFile, pkg, filename)
