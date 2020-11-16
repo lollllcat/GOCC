@@ -48,6 +48,10 @@ var isSingleFile bool
 var profileProvided bool = false
 var hotFuncMap map[string]bool
 
+// this map will mark which lock position and paths are in lambda function
+// since it will have different namescope
+var lockInLambdaFunc map[token.Pos]bool
+
 // for any lock, lockInfo stores the positions where it locks and (defer) unlocks
 // isValue indicates whether this lock is lock object or pointer in source code
 type lockInfo struct {
@@ -648,7 +652,7 @@ func addContextInitStmt(stmtsList *[]ast.Stmt, sigPos token.Pos) {
 // foo := Foo{}
 // foo.Lock()
 // 4. Promoted field pointer
-func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPathRWMutex, replacePathMutex, insertPathMutex *[][]ast.Node) ast.Node {
+func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPathRWMutex, replacePathMutex, insertPathMutex, lambdaPath, normalPath *[][]ast.Node) ast.Node {
 	fmt.Println("  Rewriting field accesses in the file...")
 	blkmap := make(map[*ast.BlockStmt]bool)
 	addImport := false
@@ -1017,11 +1021,18 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 				blkStmt := c.Node().(*ast.BlockStmt)
 				// not added before
 				if _, ok := blkmap[blkStmt]; !ok {
-					// if fd, ok := c.Parent().(*ast.FuncDecl); ok && c.Name() == "Body" {
-					if c.Name() == "Body" {
-						containLocks := reversePathContains(*replacePathMutex, n.Pos()) || reversePathContains(*replacePathRWMutex, n.Pos()) || reversePathContains(*insertPathRWMutex, n.Pos()) || reversePathContains(*insertPathMutex, n.Pos())
+					if fd, ok := c.Parent().(*ast.FuncDecl); ok && c.Name() == "Body" {
+						// containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
+						containLocks := pathContains(*normalPath, n.Pos())
 						if containLocks {
-							addContextInitStmt(&blkStmt.List, c.Node().Pos())
+							addContextInitStmt(&(fd.Body.List), fd.Name.NamePos)
+							blkmap[blkStmt] = true
+						}
+					} else if fl, ok := c.Parent().(*ast.FuncLit); ok && c.Name() == "Body" {
+						// containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
+						containLocks := pathContains(*lambdaPath, n.Pos())
+						if containLocks {
+							addContextInitStmt(&(fl.Body.List), fl.Pos())
 							blkmap[blkStmt] = true
 						}
 					}
@@ -1145,6 +1156,8 @@ func main() {
 	// this map stores the hot function from the profiling
 	hotFuncMap = make(map[string]bool)
 
+	lockInLambdaFunc = make(map[token.Pos]bool)
+
 	mPkg = make(map[string]int)
 
 	// lock positions to rewrite
@@ -1252,6 +1265,7 @@ func main() {
 			curNode = node
 			postDom.GetExit(node)
 			lockInfoMap := lockAnalysis(node, lockType, lockFuncName, unlockFuncName)
+			isLambda := strings.Contains(node.RelString(node.Pkg.Pkg), "$")
 			for _, value := range lockInfoMap {
 				// if this is not a same lock, don't replace.
 				// TODO: fix this
@@ -1265,17 +1279,29 @@ func main() {
 						// a RWMutex pointer not a value
 						for _, item := range value.lockPosition {
 							replacedRWMutexPtr[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedRWMutexPtr[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 					} else {
 						// a RWMutex value
 						for _, item := range value.lockPosition {
 							replacedRWMutexVal[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedRWMutexVal[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 					}
 				} else {
@@ -1283,17 +1309,29 @@ func main() {
 						// a Mutex pointer not a value
 						for _, item := range value.lockPosition {
 							replacedMutexPtr[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedMutexPtr[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 					} else {
 						// a Mutex value
 						for _, item := range value.lockPosition {
 							replacedMutexVal[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedMutexVal[item] = true
+							if isLambda {
+								lockInLambdaFunc[item] = true
+							}
 						}
 					}
 				}
@@ -1310,7 +1348,7 @@ func main() {
 			if *rewriteTestFile == false {
 				fName := pkg.Fset.Position(file.Pos()).Filename
 				if strings.HasSuffix(fName, "_test.go") {
-					fmt.Printf("%v is skipped since it is a testing file\n", fName)
+					// fmt.Printf("%v is skipped since it is a testing file\n", fName)
 					continue
 				}
 			}
@@ -1321,17 +1359,28 @@ func main() {
 			insertPathRWMutex := make([][]ast.Node, 0)
 			replacePathMutex := make([][]ast.Node, 0)
 			insertPathMutex := make([][]ast.Node, 0)
-
+			lambdaPath := make([][]ast.Node, 0)
+			normalPath := make([][]ast.Node, 0)
 			for l := range replacedRWMutexPtr {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
 					replacePathRWMutex = append(replacePathRWMutex, path)
+					if _, ok := lockInLambdaFunc[l]; ok {
+						lambdaPath = append(lambdaPath, path)
+					} else {
+						normalPath = append(normalPath, path)
+					}
 				}
 			}
 			for l := range replacedRWMutexVal {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
 					insertPathRWMutex = append(insertPathRWMutex, path)
+					if _, ok := lockInLambdaFunc[l]; ok {
+						lambdaPath = append(lambdaPath, path)
+					} else {
+						normalPath = append(normalPath, path)
+					}
 				}
 			}
 
@@ -1339,12 +1388,22 @@ func main() {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
 					replacePathMutex = append(replacePathMutex, path)
+					if _, ok := lockInLambdaFunc[l]; ok {
+						lambdaPath = append(lambdaPath, path)
+					} else {
+						normalPath = append(normalPath, path)
+					}
 				}
 			}
 			for l := range replacedMutexVal {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
 					insertPathMutex = append(insertPathMutex, path)
+					if _, ok := lockInLambdaFunc[l]; ok {
+						lambdaPath = append(lambdaPath, path)
+					} else {
+						normalPath = append(normalPath, path)
+					}
 				}
 			}
 
@@ -1354,7 +1413,7 @@ func main() {
 			}
 			if numberOfLocksToChange > 0 && writeOutput {
 				fmt.Printf("Number of locks to rewrite %v\n", numberOfLocksToChange)
-				ast := rewriteAST(file, pkg, &replacePathRWMutex, &insertPathRWMutex, &replacePathMutex, &insertPathMutex)
+				ast := rewriteAST(file, pkg, &replacePathRWMutex, &insertPathRWMutex, &replacePathMutex, &insertPathMutex, &lambdaPath, &normalPath)
 				filename := prog.Fset.Position(ast.Pos()).Filename
 				writeAST(ast, inputFile, pkg, filename)
 			}

@@ -5,12 +5,17 @@ import (
 )
 
 func main() {
-	m := sync.Mutex{}
-	m.Lock()
-	func() {
-		n := sync.Mutex{}
-		n.Lock()
-		n.Unlock()
+	sle := sync.Mutex{}
+	sle.Lock()
+	defer sle.Unlock()
+
+	go func() {
+		for {
+			select {
+			default:
+				sle.Lock()
+				sle.Unlock()
+			}
+		}
 	}()
-	m.Unlock()
 }
