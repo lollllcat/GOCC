@@ -61,7 +61,7 @@ func main() {
 	}
 
 	prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.GlobalDebug)
-	libbuilder.BuildPackages(prog, ssapkgs, false, true)
+	libbuilder.BuildPackages(prog, ssapkgs, true, true)
 	//  this is the list holding package function
 	var funcList []*ssa.Function = make([]*ssa.Function, 0)
 	// this is the list of names that are interface methods
@@ -74,10 +74,12 @@ func main() {
 		if pkg == nil {
 			continue
 		}
+		fmt.Println(pkg.String())
 		for _, mem := range pkg.Members {
 			switch mem.(type) {
 			case *ssa.Function:
 				f, _ := mem.(*ssa.Function)
+				fmt.Println(f.Name())
 				fileName := prog.Fset.Position(mem.Pos()).Filename
 				// we don't want the testing function, since they cannot be called without using testing package
 				if !strings.HasSuffix(fileName, "_test.go") && ast.IsExported(f.Name()) {
