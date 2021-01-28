@@ -36,6 +36,7 @@ import (
 
 // TODO: manual SSA to detect a unique name for the majic lock
 var majicLockName = "optiLock"
+var majicLockID = 0
 
 var usesMap map[*ast.Ident]types.Object
 var typesMap map[ast.Expr]types.TypeAndValue
@@ -72,6 +73,9 @@ var lockUnlockSameBB = 0
 var lockDeferUnlockSameBB = 0
 var lockUnlockPairDifferentBB = 0
 var lockDeferUnlockPairDifferentBB = 0
+var unsafeLock = 0
+var unpaired = 0
+var paired = 0
 
 var mPkg map[string]int
 var mBBSafety map[int]bool
@@ -81,6 +85,7 @@ var mapFuncSafety map[*ssa.Function]bool
 var allLockVals map[ssa.Value]bool
 var allUnlockVals map[ssa.Value]bool
 var lockAliasMap map[ssa.Value][]ssa.Value
+var pkgName map[string]bool
 
 var writeOutput bool = true
 var mCallGraph *callgraph.Graph
@@ -89,7 +94,9 @@ var outputPath string
 
 // generate the name of the packages that violates HTM
 func initBlockList() []string {
-	return []string{"sync", "os", "io", "fmt", "runtime"}
+	// return []string{"sync", "os", "io", "fmt", "runtime"}
+	// remove sync to allow nested lock
+	return []string{"os", "io", "fmt", "runtime"}
 }
 
 func isMutexValue(s string) bool {
@@ -149,10 +156,8 @@ func countLockNumber(ssaF *ssa.Function, lockType string, lock string, unlock st
 						calleeName := call.Call.StaticCallee().Name()
 						callRcv := call.Call.Value
 						if callRcv != nil && strings.Contains(callRcv.String(), lockType) && calleeName == lock {
-							numLock++
 							allLockVals[call.Call.Args[0]] = true
 						} else if callRcv != nil && strings.Contains(callRcv.String(), lockType) && call.Call.StaticCallee().Name() == unlock {
-							numUnlock++
 							allUnlockVals[call.Call.Args[0]] = true
 						}
 					}
@@ -160,7 +165,6 @@ func countLockNumber(ssaF *ssa.Function, lockType string, lock string, unlock st
 					if call.Call.StaticCallee() != nil {
 						callRcv := call.Call.Value
 						if callRcv != nil && strings.Contains(callRcv.String(), lockType) && call.Call.StaticCallee().Name() == unlock {
-							numDeferUnlock++
 							allUnlockVals[call.Call.Args[0]] = true
 						}
 					}
@@ -402,6 +406,14 @@ func normalizeFunctionName(name string) string {
 	return fName
 }
 
+// return if the ssa function is in the given input package so that we can transform
+func inFile(ssaF *ssa.Function) bool {
+	if _, ok := pkgName[ssaF.Pkg.Pkg.Name()]; ok {
+		return true
+	}
+	return false
+}
+
 // Find all paired locks in given function.
 // return a set of lockInfo for rewrite
 // currently it checks 4 patterns:
@@ -412,6 +424,10 @@ func normalizeFunctionName(name string) string {
 func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock string) map[string]lockInfo {
 	// lockMap to return from this function
 	var lockMap = map[string]lockInfo{}
+
+	if ssaF == nil || inFile(ssaF) == false {
+		return lockMap
+	}
 
 	// store all lock/unlocks instructions in sets
 	setLock := make(map[*ssa.CallCommon]bool)
@@ -471,11 +487,14 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 				lRcv := l.Args[0].String()
 				if isSameLock(l.Args[0], ul.Args[0]) && mapLockToBB[l] == mapUnlockToBB[ul] {
 					// check critical section
+					paired++
 					if checkInstructionBetween(mapLockToBB[l], setLockIndex[l], setUnlockIndex[ul]) {
 						lockUnlockSameBB++
 						setUnlock[ul] = false
 						setLock[l] = false
 						addLockPairToLockInfo(lockMap, lRcv, l, ul, ssaF)
+					} else {
+						unsafeLock++
 					}
 				}
 			}
@@ -487,7 +506,7 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 			for l := range setLock {
 				lRcv := l.Args[0].String()
 				if isSameLock(l.Args[0], ul.Args[0]) && mapLockToBB[l] == mapDeferUnlockToBB[ul] {
-
+					paired++
 					// critical section is all reachable blocks from this block plus the remaining instruction after unlock
 					lstBlk := reachableBlks(mapLockToBB[l])
 					blkInstNum := len(mapLockToBB[l].Instrs)
@@ -503,6 +522,8 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 						setDeferUnlock[ul] = false
 						setLock[l] = false
 						addLockPairToLockInfo(lockMap, lRcv, l, ul, ssaF)
+					} else {
+						unsafeLock++
 					}
 				}
 			}
@@ -523,6 +544,7 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 					break
 				}
 				if isSameLock(l.Args[0], ul.Args[0]) && lockBB.Dominates(unlockBB) {
+					paired++
 					lkPD := postDomMap[mapLockToBB[l].Index]
 					if domContains(lkPD, mapUnlockToBB[ul].Index) {
 						// critical section is the bb between lock/unlock plus the remaining instruction in lock and unlock block
@@ -535,6 +557,8 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 							setUnlock[ul] = false
 							setLock[l] = false
 							addLockPairToLockInfo(lockMap, lRcv, l, ul, ssaF)
+						} else {
+							unsafeLock++
 						}
 					}
 				}
@@ -555,6 +579,7 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 					break
 				}
 				if isSameLock(l.Args[0], ul.Args[0]) && lockBB.Dominates(unlockBB) {
+					paired++
 					lkPD := postDomMap[mapLockToBB[l].Index]
 					if domContains(lkPD, mapDeferUnlockToBB[ul].Index) {
 						// critical section is all block that can be reached by defer unlock and everything in between the lock and unlock
@@ -569,9 +594,12 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 							setDeferUnlock[ul] = false
 							setLock[l] = false
 							addLockPairToLockInfo(lockMap, lRcv, l, ul, ssaF)
+						} else {
+							unsafeLock++
 						}
 					}
 				} else if isSameLock(l.Args[0], ul.Args[0]) && unlockBB.Dominates(lockBB) {
+					paired++
 					// add this since defer unlock can happen before lock
 					ulkPD := postDomMap[mapLockToBB[ul].Index]
 					if domContains(ulkPD, mapDeferUnlockToBB[l].Index) {
@@ -584,12 +612,34 @@ func lockAnalysis(ssaF *ssa.Function, lockType string, lock string, unlock strin
 							setDeferUnlock[ul] = false
 							setLock[l] = false
 							addLockPairToLockInfo(lockMap, lRcv, l, ul, ssaF)
+						} else {
+							unsafeLock++
 						}
 					}
 				}
 			}
 		}
 	}
+
+	for _, v := range setLock {
+		if v == true {
+			unpaired++
+		}
+	}
+	for _, v := range setUnlock {
+		if v == true {
+			unpaired++
+		}
+	}
+	for _, v := range setDeferUnlock {
+		if v == true {
+			unpaired++
+		}
+	}
+	numLock += len(setLock)
+	numUnlock += len(setUnlock)
+	numDeferUnlock += len(setDeferUnlock)
+
 	return lockMap
 }
 
@@ -1180,6 +1230,7 @@ func main() {
 	blkstmtMap = make(map[token.Pos]bool)
 
 	mPkg = make(map[string]int)
+	pkgName = make(map[string]bool)
 
 	// lock positions to rewrite
 	replacedRWMutexPtr := make(map[token.Pos]bool)
@@ -1253,6 +1304,10 @@ func main() {
 	pkgs, err := packages.Load(pkgConfig, inputFile)
 	if err != nil {
 		panic("something wrong during loading!")
+	}
+
+	for _, pkg := range pkgs {
+		pkgName[pkg.Name] = true
 	}
 
 	prog, ssapkgs := ssautil.AllPackages(pkgs, ssa.NaiveForm|ssa.GlobalDebug)
@@ -1460,6 +1515,9 @@ func main() {
 		fmt.Fprintln(w, "Defer lock pairs in same BB: ", lockDeferUnlockSameBB)
 		fmt.Fprintln(w, "Lock pairs dominate each other: ", lockUnlockPairDifferentBB)
 		fmt.Fprintln(w, "Defer Lock pairs dominate each other: ", lockDeferUnlockPairDifferentBB)
+		fmt.Fprintln(w, "Unsafe lock instructions that are dropped: ", unsafeLock)
+		fmt.Fprintln(w, "Unpaired locks: ", unpaired)
+		fmt.Fprintln(w, "Paired locks: ", paired)
 
 		w.Flush()
 
