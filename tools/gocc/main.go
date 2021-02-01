@@ -86,6 +86,8 @@ var allLockVals map[ssa.Value]bool
 var allUnlockVals map[ssa.Value]bool
 var lockAliasMap map[ssa.Value][]ssa.Value
 var pkgName map[string]bool
+var tokenToName map[token.Pos]string
+var pathToEndNodePos map[ast.Node]token.Pos
 
 var writeOutput bool = true
 var mCallGraph *callgraph.Graph
@@ -654,6 +656,21 @@ func pathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 	return false
 }
 
+func getPosName(path [][]ast.Node, curPos token.Pos, posToID map[token.Pos]string) string {
+	for _, p := range path {
+		for _, node := range p {
+			if node.Pos() == curPos {
+				for _, n := range p {
+					if str, ok := posToID[pathToEndNodePos[n]]; ok {
+						return str
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func reversePathContains(replacePath [][]ast.Node, curPos token.Pos) bool {
 	for _, path := range replacePath {
 	_PATHLOOP:
@@ -681,16 +698,18 @@ func singlePathContains(singlePath []ast.Node, curPos token.Pos) bool {
 }
 
 // adds context variable definition at the beginning of the function's statement list
-func addContextInitStmt(stmtsList *[]ast.Stmt, sigPos token.Pos) {
-	newStmt := ast.AssignStmt{
-		Lhs:    []ast.Expr{ast.NewIdent(majicLockName)},
-		TokPos: sigPos, // use concrete position to avoid being split by a comment leading to syntax error
-		Tok:    token.DEFINE,
-		Rhs:    []ast.Expr{ast.NewIdent("rtm.OptiLock{}")}}
-	var newStmtsList []ast.Stmt
-	newStmtsList = append(newStmtsList, &newStmt)
-	newStmtsList = append(newStmtsList, (*stmtsList)...)
-	*stmtsList = newStmtsList
+func addContextInitStmt(stmtsList *[]ast.Stmt, sigPos token.Pos, count int) {
+	for i := 0; i < count; i++ {
+		newStmt := ast.AssignStmt{
+			Lhs:    []ast.Expr{ast.NewIdent(majicLockName + strconv.Itoa(i))},
+			TokPos: sigPos, // use concrete position to avoid being split by a comment leading to syntax error
+			Tok:    token.DEFINE,
+			Rhs:    []ast.Expr{ast.NewIdent("rtm.OptiLock{}")}}
+		var newStmtsList []ast.Stmt
+		newStmtsList = append(newStmtsList, &newStmt)
+		newStmtsList = append(newStmtsList, (*stmtsList)...)
+		*stmtsList = newStmtsList
+	}
 }
 
 func collectBlkstmt(f ast.Node, pkg *packages.Package) {
@@ -721,10 +740,11 @@ func collectBlkstmt(f ast.Node, pkg *packages.Package) {
 // foo := Foo{}
 // foo.Lock()
 // 4. Promoted field pointer
-func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPathRWMutex, replacePathMutex, insertPathMutex, lambdaPath, normalPath *[][]ast.Node) ast.Node {
+func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPathRWMutex, replacePathMutex, insertPathMutex, lambdaPath, normalPath *[][]ast.Node, posToID map[token.Pos]string) ast.Node {
 	fmt.Println("  Rewriting field accesses in the file...")
 	blkmap := make(map[*ast.BlockStmt]bool)
 	addImport := false
+	optilockNumber := len(posToID) / 2
 	postFunc := func(c *astutil.Cursor) bool {
 		node := c.Node()
 		switch n := node.(type) {
@@ -741,7 +761,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 								if strings.Contains(lockType, "*sync.Mutex") {
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -759,7 +779,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 4: receiver is promoted field pointer
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -791,7 +811,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 2: receiver is lock object, need to take its address
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -813,7 +833,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 3: receiver is some promoted field object
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -850,7 +870,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 								if lockType == "*sync.RWMutex" {
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: &ast.Ident{
@@ -872,7 +892,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 3: promoted field pointer
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: &ast.Ident{
@@ -902,7 +922,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 1: receiver is lock pointer
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: &ast.Ident{
@@ -924,7 +944,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 4: lock is called on promoted field pointer
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*replacePathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -958,7 +978,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 2: receiver is a lock value
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: &ast.Ident{
@@ -983,7 +1003,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 3: promoted field object
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: &ast.Ident{
@@ -1016,7 +1036,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 2, lock is called on lock value
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -1038,7 +1058,7 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 									// branch 3: lock is called on promoted field value
 									fun := &ast.SelectorExpr{
 										X: &ast.Ident{
-											Name:    majicLockName,
+											Name:    majicLockName + getPosName(*insertPathRWMutex, n.Pos(), posToID),
 											NamePos: se.X.Pos(),
 										},
 										Sel: se.Sel,
@@ -1094,15 +1114,14 @@ func rewriteAST(f ast.Node, pkg *packages.Package, replacePathRWMutex, insertPat
 						// containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
 						containLocks := pathContains(*normalPath, n.Pos())
 						if containLocks {
-							addContextInitStmt(&(fd.Body.List), fd.Name.NamePos)
+							addContextInitStmt(&(fd.Body.List), fd.Name.NamePos, optilockNumber)
 							blkmap[blkStmt] = true
 						}
 					} else if fl, ok := c.Parent().(*ast.FuncLit); ok && c.Name() == "Body" {
 						// containLocks := pathContains(*replacePathMutex, n.Pos()) || pathContains(*replacePathRWMutex, n.Pos()) || pathContains(*insertPathRWMutex, n.Pos()) || pathContains(*insertPathMutex, n.Pos())
 						containLocks := reversePathContains(*lambdaPath, c.Node().Pos())
 						if containLocks {
-							fmt.Println("haha")
-							addContextInitStmt(&(fl.Body.List), fl.Body.Lbrace)
+							addContextInitStmt(&(fl.Body.List), fl.Body.Lbrace, optilockNumber)
 							blkmap[blkStmt] = true
 						}
 					}
@@ -1231,6 +1250,8 @@ func main() {
 
 	mPkg = make(map[string]int)
 	pkgName = make(map[string]bool)
+	tokenToName = make(map[token.Pos]string)
+	pathToEndNodePos = make(map[ast.Node]token.Pos)
 
 	// lock positions to rewrite
 	replacedRWMutexPtr := make(map[token.Pos]bool)
@@ -1342,7 +1363,7 @@ func main() {
 			postDom.GetExit(node)
 			lockInfoMap := lockAnalysis(node, lockType, lockFuncName, unlockFuncName)
 			isLambda := strings.Contains(node.RelString(node.Pkg.Pkg), "$")
-			for _, value := range lockInfoMap {
+			for lkName, value := range lockInfoMap {
 				// if this is not a same lock, don't replace.
 				// TODO: fix this
 				if checkSameLock(value, pkgs) == false {
@@ -1355,12 +1376,14 @@ func main() {
 						// a RWMutex pointer not a value
 						for _, item := range value.lockPosition {
 							replacedRWMutexPtr[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedRWMutexPtr[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
@@ -1369,12 +1392,14 @@ func main() {
 						// a RWMutex value
 						for _, item := range value.lockPosition {
 							replacedRWMutexVal[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedRWMutexVal[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
@@ -1385,12 +1410,14 @@ func main() {
 						// a Mutex pointer not a value
 						for _, item := range value.lockPosition {
 							replacedMutexPtr[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedMutexPtr[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
@@ -1399,12 +1426,14 @@ func main() {
 						// a Mutex value
 						for _, item := range value.lockPosition {
 							replacedMutexVal[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
 						}
 						for _, item := range value.unlockPosition {
 							replacedMutexVal[item] = true
+							tokenToName[item] = lkName
 							if isLambda {
 								lockInLambdaFunc[item] = true
 							}
@@ -1419,7 +1448,9 @@ func main() {
 		usesMap = pkg.TypesInfo.Uses
 		typesMap = pkg.TypesInfo.Types
 		for _, file := range pkg.Syntax {
-
+			nameToID := make(map[string]string)
+			posToID := make(map[token.Pos]string)
+			id := 0
 			// don't rewrite testing file by default
 			if *rewriteTestFile == false {
 				fName := pkg.Fset.Position(file.Pos()).Filename
@@ -1440,22 +1471,38 @@ func main() {
 			for l := range replacedRWMutexPtr {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
+					pathToEndNodePos[path[0]] = l
 					replacePathRWMutex = append(replacePathRWMutex, path)
 					if _, ok := lockInLambdaFunc[l]; ok {
 						lambdaPath = append(lambdaPath, path)
 					} else {
 						normalPath = append(normalPath, path)
 					}
+					if val, ok := nameToID[tokenToName[l]]; ok {
+						posToID[l] = val
+					} else {
+						nameToID[tokenToName[l]] = strconv.Itoa(id)
+						posToID[l] = strconv.Itoa(id)
+						id++
+					}
 				}
 			}
 			for l := range replacedRWMutexVal {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
+					pathToEndNodePos[path[0]] = l
 					insertPathRWMutex = append(insertPathRWMutex, path)
 					if _, ok := lockInLambdaFunc[l]; ok {
 						lambdaPath = append(lambdaPath, path)
 					} else {
 						normalPath = append(normalPath, path)
+					}
+					if val, ok := nameToID[tokenToName[l]]; ok {
+						posToID[l] = val
+					} else {
+						nameToID[tokenToName[l]] = strconv.Itoa(id)
+						posToID[l] = strconv.Itoa(id)
+						id++
 					}
 				}
 			}
@@ -1463,22 +1510,38 @@ func main() {
 			for l := range replacedMutexPtr {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
+					pathToEndNodePos[path[0]] = l
 					replacePathMutex = append(replacePathMutex, path)
 					if _, ok := lockInLambdaFunc[l]; ok {
 						lambdaPath = append(lambdaPath, path)
 					} else {
 						normalPath = append(normalPath, path)
 					}
+					if val, ok := nameToID[tokenToName[l]]; ok {
+						posToID[l] = val
+					} else {
+						nameToID[tokenToName[l]] = strconv.Itoa(id)
+						posToID[l] = strconv.Itoa(id)
+						id++
+					}
 				}
 			}
 			for l := range replacedMutexVal {
 				path, ok := astutil.PathEnclosingInterval(file, l, l)
 				if ok {
+					pathToEndNodePos[path[0]] = l
 					insertPathMutex = append(insertPathMutex, path)
 					if _, ok := lockInLambdaFunc[l]; ok {
 						lambdaPath = append(lambdaPath, path)
 					} else {
 						normalPath = append(normalPath, path)
+					}
+					if val, ok := nameToID[tokenToName[l]]; ok {
+						posToID[l] = val
+					} else {
+						nameToID[tokenToName[l]] = strconv.Itoa(id)
+						posToID[l] = strconv.Itoa(id)
+						id++
 					}
 				}
 			}
@@ -1490,7 +1553,7 @@ func main() {
 			if numberOfLocksToChange > 0 && writeOutput {
 				fmt.Printf("Number of locks to rewrite %v\n", numberOfLocksToChange)
 				collectBlkstmt(file, pkg)
-				ast := rewriteAST(file, pkg, &replacePathRWMutex, &insertPathRWMutex, &replacePathMutex, &insertPathMutex, &lambdaPath, &normalPath)
+				ast := rewriteAST(file, pkg, &replacePathRWMutex, &insertPathRWMutex, &replacePathMutex, &insertPathMutex, &lambdaPath, &normalPath, posToID)
 				filename := prog.Fset.Position(ast.Pos()).Filename
 				writeAST(ast, inputFile, pkg, filename)
 			}
